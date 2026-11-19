@@ -20,7 +20,6 @@ import android.os.Looper;
 import android.os.Process;
 import android.provider.Settings;
 import android.net.Uri;
-import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -64,7 +63,6 @@ public class MainActivity extends ComponentActivity {
     private static final int CAMERA_REQUEST = 41;
     private static final int CAPTURE_PERMISSION_REQUEST = 43;
     private static final int OWNER_REQUEST = 42;
-    private static final long WARNING_MS = 120_000L;
 
     private static final int BG = Color.rgb(13, 14, 23);
     private static final int SURFACE = Color.rgb(29, 31, 45);
@@ -83,7 +81,7 @@ public class MainActivity extends ComponentActivity {
     private String ownerAction = "";
     private Screen screen = Screen.HOME;
 
-    private enum Screen { HOME, CAPTURE, WARNING, HISTORY }
+    private enum Screen { HOME, CAPTURE, HISTORY }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -104,6 +102,17 @@ public class MainActivity extends ComponentActivity {
     protected void onResume() {
         super.onResume();
         if (prefs != null && screen == Screen.HOME) showHome();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent.getBooleanExtra("capture_from_detected", false)) {
+            startCapture();
+        } else if (intent.getBooleanExtra("owner_panel", false)) {
+            showHome();
+        }
     }
 
     static boolean hasUsageAccess(Context context) {
@@ -476,63 +485,6 @@ public class MainActivity extends ComponentActivity {
         finishAndRemoveTask();
     }
 
-    private void showWarning(boolean saved) {
-        screen = Screen.WARNING;
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-
-        LinearLayout poster = column(28);
-        poster.setGravity(Gravity.CENTER);
-        GradientDrawable bg = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                new int[] { Color.rgb(64, 16, 41), Color.rgb(16, 14, 26), Color.rgb(91, 23, 48) });
-        poster.setBackground(bg);
-        setContentView(poster);
-        add(poster, text("⚠", 55, PINK, true), 0);
-
-        TextView title = text("내 폰을\n보지 마", 49, WHITE, true);
-        title.setGravity(Gravity.CENTER);
-        add(poster, title, 14);
-        TextView subtitle = text("이 휴대폰은 개인 소유입니다.\n허락 없이 사용하지 마세요.",
-                17, Color.rgb(240, 195, 213), false);
-        subtitle.setGravity(Gravity.CENTER);
-        add(poster, subtitle, 24);
-
-        TextView status = text(saved ? "📸 접근 시간이 기록되고 사진이 저장됐어요"
-                : "🕒 접근 시간이 기록됐어요", 14, WHITE, true);
-        status.setGravity(Gravity.CENTER);
-        add(poster, status, 36);
-
-        TextView timer = text("02:00", 42, PINK, true);
-        timer.setGravity(Gravity.CENTER);
-        add(poster, timer, 28);
-        TextView note = text("2분 뒤 앱 화면이 자동으로 해제됩니다.\n시스템 홈 버튼은 계속 사용할 수 있습니다.",
-                12, Color.rgb(225, 181, 198), false);
-        note.setGravity(Gravity.CENTER);
-        add(poster, note, 8);
-
-        long deadline = SystemClock.elapsedRealtime() + WARNING_MS;
-        Runnable ticker = new Runnable() {
-            @Override public void run() {
-                if (screen != Screen.WARNING || isFinishing() || isDestroyed()) return;
-                long remaining = Math.max(0, deadline - SystemClock.elapsedRealtime());
-                long seconds = (remaining + 999) / 1000;
-                timer.setText(String.format(Locale.KOREA, "%02d:%02d", seconds / 60, seconds % 60));
-                if (remaining <= 0) {
-                    showHome();
-                } else {
-                    handler.postDelayed(this, 250);
-                }
-            }
-        };
-        ticker.run();
-    }
-
     private void requestOwnerAccess(String action) {
         KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
         if (km != null && km.isDeviceSecure()) {
@@ -692,7 +644,7 @@ public class MainActivity extends ComponentActivity {
 
     @Override
     public void onBackPressed() {
-        if (screen == Screen.WARNING || screen == Screen.CAPTURE) return;
+        if (screen == Screen.CAPTURE) return;
         if (screen == Screen.HISTORY) {
             showHome();
             return;
