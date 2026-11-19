@@ -24,6 +24,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
+import android.widget.Button;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -147,8 +148,8 @@ public class GuardianService extends Service {
         if (overlay != null) return;
 
         String label = appLabel(newest);
-        saveEvent(label, newest, newestAt > 0 ? newestAt : now);
-        showOverlay(label);
+        String eventId = saveEvent(label, newest, newestAt > 0 ? newestAt : now);
+        showOverlay(label, eventId);
     }
 
     private boolean shouldIgnore(String pkg) {
@@ -177,7 +178,8 @@ public class GuardianService extends Service {
         }
     }
 
-    private void saveEvent(String label, String pkg, long time) {
+    private String saveEvent(String label, String pkg, long time) {
+        String id = UUID.randomUUID().toString();
         try {
             JSONArray old;
             try {
@@ -186,7 +188,7 @@ public class GuardianService extends Service {
                 old = new JSONArray();
             }
             JSONObject item = new JSONObject();
-            item.put("id", UUID.randomUUID().toString());
+            item.put("id", id);
             item.put("time", time);
             item.put("photo", "");
             item.put("status", "다른 앱 실행 감지 · " + label + " (사진 촬영 없음)");
@@ -198,6 +200,7 @@ public class GuardianService extends Service {
             }
             preferences.edit().putString("events", updated.toString()).apply();
         } catch (Exception ignored) { }
+        return id;
     }
 
     private int dp(int n) {
@@ -214,7 +217,7 @@ public class GuardianService extends Service {
         return text;
     }
 
-    private void showOverlay(String appName) {
+    private void showOverlay(String appName, String eventId) {
         if (windowManager == null || !Settings.canDrawOverlays(this)) return;
         long startElapsed = android.os.SystemClock.elapsedRealtime();
         overlayUntil = System.currentTimeMillis() + WARNING_DURATION;
@@ -247,6 +250,42 @@ public class GuardianService extends Service {
         LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
         noteLp.topMargin = dp(18);
         panel.addView(note, noteLp);
+
+        // Explicit user action to open a visible front camera. No hidden/background capture.
+        Button selfie = new Button(this);
+        selfie.setAllCaps(false);
+        selfie.setText("📸  셀카 카메라 열기");
+        selfie.setTextSize(18);
+        selfie.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        selfie.setTextColor(Color.rgb(27, 16, 37));
+        GradientDrawable selfieBg = new GradientDrawable();
+        selfieBg.setColor(Color.rgb(255, 145, 191));
+        selfieBg.setCornerRadius(dp(18));
+        selfie.setBackground(selfieBg);
+        LinearLayout.LayoutParams selfieLp = new LinearLayout.LayoutParams(-1, dp(64));
+        selfieLp.topMargin = dp(32);
+        panel.addView(selfie, selfieLp);
+
+        TextView cameraNotice = label("버튼을 누르면 셀카 미리보기가 열리고\n촬영 사실이 화면에 표시됩니다.", 13,
+                Color.rgb(247, 208, 227), false);
+        LinearLayout.LayoutParams cameraNoticeLp = new LinearLayout.LayoutParams(-1, -2);
+        cameraNoticeLp.topMargin = dp(12);
+        panel.addView(cameraNotice, cameraNoticeLp);
+        selfie.setOnClickListener(v -> {
+            Intent capture = new Intent(this, MainActivity.class);
+            capture.putExtra("capture_from_warning", true);
+            capture.putExtra("capture_event_id", eventId);
+            capture.putExtra("capture_app_name", appName);
+            capture.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            try {
+                startActivity(capture);
+                removeOverlay();
+            } catch (Exception ex) {
+                android.widget.Toast.makeText(this,
+                        "카메라 화면을 열 수 없어요. afk 앱을 직접 실행해 주세요.",
+                        android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
