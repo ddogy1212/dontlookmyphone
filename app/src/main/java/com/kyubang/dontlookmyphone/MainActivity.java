@@ -89,7 +89,9 @@ public class MainActivity extends ComponentActivity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
-        if (isArmed() && !getIntent().getBooleanExtra("owner_panel", false)) {
+        if (getIntent().getBooleanExtra("capture_from_warning", false)) {
+            startCapture();
+        } else if (isArmed() && !getIntent().getBooleanExtra("owner_panel", false)) {
             startCapture();
         } else {
             showHome();
@@ -295,7 +297,7 @@ public class MainActivity extends ComponentActivity {
             add(root, stop, 10);
         }
 
-        add(root, text("다른 앱 실행은 시간과 앱 이름만 기록하고 사진을 촬영하지 않아요.\n촬영은 afk 앱을 직접 열었을 때만 안내 후 진행됩니다.",
+        add(root, text("다른 앱이 감지되면 경고에서 '셀카 카메라 열기'를 눌러주세요.\n전면 카메라 미리보기가 열린 뒤 사진이 촬영돼요.",
                 13, MUTED, false), 26);
     }
 
@@ -342,8 +344,12 @@ public class MainActivity extends ComponentActivity {
         getWindow().getDecorView().setSystemUiVisibility(0);
 
         long triggeredAt = System.currentTimeMillis();
-        activeEventId = UUID.randomUUID().toString();
-        addEvent(activeEventId, triggeredAt);
+        String eventFromWarning = getIntent().getStringExtra("capture_event_id");
+        activeEventId = eventFromWarning == null || eventFromWarning.isEmpty()
+                ? UUID.randomUUID().toString() : eventFromWarning;
+        if (eventFromWarning == null || eventFromWarning.isEmpty()) {
+            addEvent(activeEventId, triggeredAt);
+        }
 
         LinearLayout page = basePage();
         screen = Screen.CAPTURE;
@@ -428,7 +434,9 @@ public class MainActivity extends ComponentActivity {
     private void resolveCapture(boolean saved, String filename, String message) {
         if (captureResolved) return;
         captureResolved = true;
-        updateEvent(activeEventId, saved ? filename : "", message);
+        String app = getIntent().getStringExtra("capture_app_name");
+        String status = app == null ? message : (app + " 실행 감지 · " + message);
+        updateEvent(activeEventId, saved ? filename : "", status);
         if (cameraProvider != null) cameraProvider.unbindAll();
         imageCapture = null;
         showWarning(saved);
