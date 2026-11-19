@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.app.AppOpsManager;
 import android.app.KeyguardManager;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -61,6 +62,7 @@ public class MainActivity extends ComponentActivity {
     private static final String KEY_MINUTES = "minutes";
     private static final String KEY_EVENTS = "events";
     private static final int CAMERA_REQUEST = 41;
+    private static final int CAPTURE_PERMISSION_REQUEST = 43;
     private static final int OWNER_REQUEST = 42;
     private static final long WARNING_MS = 120_000L;
 
@@ -89,7 +91,7 @@ public class MainActivity extends ComponentActivity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
-        if (getIntent().getBooleanExtra("capture_from_warning", false)) {
+        if (getIntent().getBooleanExtra("capture_from_detected", false)) {
             startCapture();
         } else if (isArmed() && !getIntent().getBooleanExtra("owner_panel", false)) {
             startCapture();
@@ -297,7 +299,7 @@ public class MainActivity extends ComponentActivity {
             add(root, stop, 10);
         }
 
-        add(root, text("다른 앱이 감지되면 경고에서 '셀카 카메라 열기'를 눌러주세요.\n전면 카메라 미리보기가 열린 뒤 사진이 촬영돼요.",
+        add(root, text("다른 앱 실행을 감지하면 셀카 카메라가 바로 열립니다.\n화면에서 촬영 버튼을 눌러 사진을 남길 수 있어요.",
                 13, MUTED, false), 26);
     }
 
@@ -323,6 +325,15 @@ public class MainActivity extends ComponentActivity {
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAPTURE_PERMISSION_REQUEST) {
+            if (grantResults.length > 0 &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startCapture();
+            } else {
+                resolveCapture(false, "", "카메라 권한 거부");
+            }
+            return;
+        }
         if (requestCode == CAMERA_REQUEST) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 armNow(pendingMinutes);
@@ -340,6 +351,10 @@ public class MainActivity extends ComponentActivity {
     private void startCapture() {
         screen = Screen.CAPTURE;
         captureResolved = false;
+        if (getIntent().getBooleanExtra("capture_from_detected", false)) {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) nm.cancel(713);
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(0);
 
@@ -356,7 +371,7 @@ public class MainActivity extends ComponentActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         add(page, text("●  실행 감지됨", 15, PINK, true), 0);
         add(page, text("잠깐! 📸", 38, WHITE, true), 14);
-        add(page, text("전면 카메라가 켜집니다.\n곧 사진을 촬영하고 경고 화면으로 전환해요.",
+        add(page, text("전면 카메라가 켜졌어요.\n촬영 버튼을 누르면 사진을 이 기기에 저장해요.",
                 16, MUTED, false), 13);
 
         PreviewView previewView = new PreviewView(this);
@@ -366,11 +381,28 @@ public class MainActivity extends ComponentActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(350));
         previewLp.topMargin = dp(20);
         page.addView(previewView, previewLp);
-        add(page, text("🔴  전면 카메라 촬영 안내 · 사진은 이 기기에만 저장", 13, PINK, false), 16);
+        add(page, text("🔴  전면 카메라 · 촬영은 버튼을 누른 경우에만", 13, PINK, false), 16);
+
+        Button shutter = button("📸  셀카 촬영하기", PINK, BG);
+        shutter.setEnabled(false);
+        shutter.setOnClickListener(v -> {
+            shutter.setEnabled(false);
+            takePhoto();
+        });
+        add(page, shutter, 16);
+        Button skip = button("사진 촬영 없이 닫기", SURFACE, WHITE);
+        skip.setOnClickListener(v -> {
+            updateEvent(activeEventId, "", "셀카 촬영 취소");
+            captureResolved = true;
+            if (cameraProvider != null) cameraProvider.unbindAll();
+            finishAndRemoveTask();
+        });
+        add(page, skip, 10);
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
-            handler.postDelayed(() -> resolveCapture(false, "", "카메라 권한 없음"), 1100);
+            getIntent().putExtra("capture_event_id", activeEventId);
+            requestPermissions(new String[] { Manifest.permission.CAMERA }, CAPTURE_PERMISSION_REQUEST);
             return;
         }
 
@@ -391,7 +423,7 @@ public class MainActivity extends ComponentActivity {
                             .build();
                     preview.setSurfaceProvider(previewView.getSurfaceProvider());
                     cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageCapture);
-                    handler.postDelayed(this::takePhoto, 1600);
+                    shutter.setEnabled(true);
                 } catch (Exception error) {
                     resolveCapture(false, "", "카메라 시작 실패");
                 }
@@ -439,7 +471,9 @@ public class MainActivity extends ComponentActivity {
         updateEvent(activeEventId, saved ? filename : "", status);
         if (cameraProvider != null) cameraProvider.unbindAll();
         imageCapture = null;
-        showWarning(saved);
+        Toast.makeText(this, saved ? "셀카가 기기에 저장됐어요 📸" : status,
+                Toast.LENGTH_LONG).show();
+        finishAndRemoveTask();
     }
 
     private void showWarning(boolean saved) {
