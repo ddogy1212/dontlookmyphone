@@ -390,20 +390,11 @@ public class MainActivity extends ComponentActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(350));
         previewLp.topMargin = dp(20);
         page.addView(previewView, previewLp);
-        add(page, text("🔴  전면 카메라 촬영 준비 중 · 촬영 전 취소 가능", 13, PINK, false), 16);
+        add(page, text("🔴  전면 카메라 촬영 준비 중 · 뒤로가기로 나갈 수 있어요", 13, PINK, false), 16);
 
         TextView countdown = text("카메라 준비 중…", 23, PINK, true);
         countdown.setGravity(Gravity.CENTER);
         add(page, countdown, 16);
-        Button skip = button("사진 촬영 없이 닫기", SURFACE, WHITE);
-        skip.setOnClickListener(v -> {
-            updateEvent(activeEventId, "", "셀카 촬영 취소");
-            captureResolved = true;
-            handler.removeCallbacksAndMessages(null);
-            if (cameraProvider != null) cameraProvider.unbindAll();
-            finishAndRemoveTask();
-        });
-        add(page, skip, 10);
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -654,9 +645,22 @@ public class MainActivity extends ComponentActivity {
         prefs.edit().remove(KEY_EVENTS).apply();
     }
 
+    private void cancelPendingCapture() {
+        if (captureResolved) return;
+        captureResolved = true;
+        handler.removeCallbacksAndMessages(null);
+        if (cameraProvider != null) cameraProvider.unbindAll();
+        imageCapture = null;
+        if (activeEventId != null) updateEvent(activeEventId, "", "셀카 촬영 취소");
+    }
+
     @Override
     public void onBackPressed() {
-        if (screen == Screen.CAPTURE) return;
+        if (screen == Screen.CAPTURE) {
+            cancelPendingCapture();
+            finishAndRemoveTask();
+            return;
+        }
         if (screen == Screen.HISTORY) {
             showHome();
             return;
@@ -667,6 +671,10 @@ public class MainActivity extends ComponentActivity {
     @Override
     protected void onStop() {
         super.onStop();
+        if (screen == Screen.CAPTURE && !captureResolved) {
+            cancelPendingCapture();
+            finish();
+        }
         if (!authenticating && screen == Screen.HOME && isArmed() && !isChangingConfigurations()) {
             // The next launcher tap should start a fresh activity and log a fresh event.
             finish();
