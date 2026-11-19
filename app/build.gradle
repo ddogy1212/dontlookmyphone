@@ -7,11 +7,11 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId 'com.kyubang.afk.cooldown20ms'
+        applicationId 'com.kyubang.afk.camera20ms'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '1.1.0-20ms'
+        versionName '1.2.0-camera20ms'
     }
 
     compileOptions {
