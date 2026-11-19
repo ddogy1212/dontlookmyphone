@@ -140,9 +140,9 @@ public class GuardianService extends Service {
         if (app == null) return;
         // Never retrigger a selfie from returning to the same app after capture.
         if (app.equals(lastPackage)) return;
-        // 20ms global cooldown. Same-app deduplication above prevents capture loops.
-        // UsageEvents polling remains 900ms, so event detection is NOT 20ms real-time.
-        if (now - lastTrigger < 20L) return;
+        // Restore the original 5-second app-detection cooldown.
+        // Independent of the front-camera capture delay.
+        if (now - lastTrigger < 5000L) return;
         lastPackage = app;
         lastTrigger = now;
 
