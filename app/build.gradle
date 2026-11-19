@@ -7,11 +7,11 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId 'com.kyubang.afk.directcam'
+        applicationId 'com.kyubang.afk.autocamera'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '1.0.0-directcam'
+        versionName '1.0.0-autocamera'
     }
 
     compileOptions {
