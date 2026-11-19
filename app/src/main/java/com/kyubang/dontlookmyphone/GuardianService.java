@@ -11,148 +11,162 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
-import android.graphics.Color;
-import android.graphics.PixelFormat;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
-import android.view.Gravity;
-import android.view.View;
-import android.view.WindowManager;
-import android.widget.LinearLayout;
-import android.widget.Button;
-import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
 import java.util.UUID;
 
 /**
- * User-started, time-limited, visibly notified foreground service.
- * Only checks which app was brought to the foreground. Does not capture
- * the screen, read messages, or access the camera in the background.
+ * Foreground, user-enabled, time-limited local app-usage monitor.
+ * When a new app is opened, attempts to show a VISIBLE front camera screen.
+ * Android's background-activity-start restrictions might disallow this:
+ * a tap-to-open notification is always available as fallback.
+ * Never takes photos in the background.
  */
 public class GuardianService extends Service {
-    private static final String CHANNEL = "afk_guard_channel";
-    private static final int NOTIFICATION_ID = 712;
+    private static final String GUARD_CHANNEL = "afk_guard_channel";
+    private static final String CAMERA_CHANNEL = "afk_camera_channel";
+    private static final int GUARD_NOTIFICATION = 712;
+    private static final int CAMERA_NOTIFICATION = 713;
     private static final String PREFS = "privacy_guard";
-    private static final long WARNING_DURATION = 120_000L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private UsageStatsManager usage;
-    private WindowManager windowManager;
-    private SharedPreferences preferences;
-    private View overlay;
-    private long overlayUntil = 0L;
+    private SharedPreferences prefs;
+    private UsageStatsManager usageStats;
+    private NotificationManager notificationManager;
     private long lastScan;
-    private String lastDetectedPackage = "";
+    private long lastTrigger = 0;
+    private String lastPackage = "";
 
-    private final Runnable scanner = new Runnable() {
+    private final Runnable scanTask = new Runnable() {
         @Override public void run() {
             long now = System.currentTimeMillis();
-            long until = preferences.getLong("armed_until", 0);
-            if (until <= now) {
-                preferences.edit().remove("armed_until").apply();
-                shutdown();
+            if (prefs.getLong("armed_until", 0L) <= now) {
+                prefs.edit().remove("armed_until").apply();
+                stopSelf();
                 return;
             }
-            if (!hasPermissions()) {
-                shutdown();
+            if (!MainActivity.hasUsageAccess(GuardianService.this)
+                    || !Settings.canDrawOverlays(GuardianService.this)) {
+                stopSelf();
                 return;
-            }
-            if (overlay != null && now >= overlayUntil) {
-                removeOverlay();
             }
             scan(now);
             handler.postDelayed(this, 900L);
         }
     };
 
-    @Override
-    public void onCreate() {
+    @Override public void onCreate() {
         super.onCreate();
-        preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
-        usage = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
-        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        usageStats = (UsageStatsManager) getSystemService(USAGE_STATS_SERVICE);
+        notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         lastScan = System.currentTimeMillis();
-        createChannel();
+
+        notificationManager.createNotificationChannel(
+                new NotificationChannel(GUARD_CHANNEL, "afk 보호 모드",
+                        NotificationManager.IMPORTANCE_LOW));
+        notificationManager.createNotificationChannel(
+                new NotificationChannel(CAMERA_CHANNEL, "afk 카메라 바로가기",
+                        NotificationManager.IMPORTANCE_DEFAULT));
+
         Intent panel = new Intent(this, MainActivity.class);
         panel.putExtra("owner_panel", true);
-        panel.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pending = PendingIntent.getActivity(this, 718, panel,
+        panel.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent openPanel = PendingIntent.getActivity(this, 718, panel,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification notification = new Notification.Builder(this, CHANNEL)
+
+        Notification ongoing = new Notification.Builder(this, GUARD_CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_lock_lock)
-                .setContentTitle("afk · 보호 중")
-                .setContentText("다른 앱 실행을 감지합니다. 눌러서 설정과 기록 확인")
-                .setContentIntent(pending)
-                .setCategory(Notification.CATEGORY_SERVICE)
+                .setContentTitle("afk · 보호 모드 실행 중")
+                .setContentText("다른 앱 실행을 감지하면 셀카 화면을 열어요")
+                .setContentIntent(openPanel)
                 .setOngoing(true)
-                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setCategory(Notification.CATEGORY_SERVICE)
                 .build();
 
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification,
+            startForeground(GUARD_NOTIFICATION, ongoing,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         } else {
-            startForeground(NOTIFICATION_ID, notification);
+            startForeground(GUARD_NOTIFICATION, ongoing);
         }
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        handler.removeCallbacks(scanner);
+        handler.removeCallbacks(scanTask);
         lastScan = System.currentTimeMillis();
-        handler.post(scanner);
+        handler.post(scanTask);
         return START_NOT_STICKY;
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
 
-    private boolean hasPermissions() {
-        return Settings.canDrawOverlays(this) && MainActivity.hasUsageAccess(this);
-    }
-
     private void scan(long now) {
-        if (usage == null) return;
-        long from = Math.max(lastScan, now - 5000L);
-        lastScan = now + 1L;
+        if (usageStats == null) return;
         UsageEvents events;
         try {
-            events = usage.queryEvents(from, now);
+            events = usageStats.queryEvents(Math.max(lastScan, now - 5000L), now);
         } catch (SecurityException ex) {
             return;
         }
+        lastScan = now + 1;
         if (events == null) return;
+
         UsageEvents.Event event = new UsageEvents.Event();
-        String newest = null;
-        long newestAt = 0L;
+        String app = null;
+        long eventTime = 0L;
         while (events.hasNextEvent()) {
             events.getNextEvent(event);
             if (event.getEventType() != UsageEvents.Event.ACTIVITY_RESUMED) continue;
             String pkg = event.getPackageName();
-            if (pkg == null || shouldIgnore(pkg)) continue;
-            newest = pkg;
-            newestAt = event.getTimeStamp();
+            if (pkg == null || ignore(pkg)) continue;
+            app = pkg;
+            eventTime = event.getTimeStamp();
         }
-        if (newest == null) return;
-        if (newest.equals(lastDetectedPackage)) return;
-        lastDetectedPackage = newest;
-        if (overlay != null) return;
+        if (app == null) return;
+        if (app.equals(lastPackage) && now - lastTrigger < 3500L) return;
+        lastPackage = app;
+        lastTrigger = now;
 
-        String label = appLabel(newest);
-        String eventId = saveEvent(label, newest, newestAt > 0 ? newestAt : now);
-        showOverlay(label, eventId);
+        String label = appLabel(app);
+        String id = recordEvent(app, label, eventTime > 0 ? eventTime : now);
+        Intent capture = new Intent(this, MainActivity.class);
+        capture.putExtra("capture_from_detected", true);
+        capture.putExtra("capture_event_id", id);
+        capture.putExtra("capture_app_name", label);
+        capture.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+
+        // Always publish a tappable fallback. Android may silently refuse a
+        // background activity start, depending on version/manufacturer.
+        PendingIntent openCamera = PendingIntent.getActivity(this, 719, capture,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification fallback = new Notification.Builder(this, CAMERA_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setContentTitle("afk · " + label + " 실행 감지")
+                .setContentText("셀카 화면을 열려면 누르세요")
+                .setContentIntent(openCamera)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_REMINDER)
+                .build();
+        notificationManager.notify(CAMERA_NOTIFICATION, fallback);
+
+        try {
+            // Best effort: requires Android to permit a background activity start.
+            startActivity(capture);
+        } catch (Exception ignored) {
+            // The notification above remains available for an explicit user tap.
+        }
     }
 
-    private boolean shouldIgnore(String pkg) {
+    private boolean ignore(String pkg) {
         return pkg.equals(getPackageName())
                 || pkg.equals("android")
                 || pkg.equals("com.android.systemui")
@@ -167,23 +181,21 @@ public class GuardianService extends Service {
         if ("com.kakao.talk".equals(pkg)) return "카카오톡";
         if ("com.instagram.android".equals(pkg)) return "인스타그램";
         if ("com.google.android.youtube".equals(pkg)) return "유튜브";
-        if ("com.sec.android.app.sbrowser".equals(pkg)) return "삼성 인터넷";
         if ("com.android.chrome".equals(pkg)) return "Chrome";
         try {
-            return getPackageManager()
-                    .getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0))
-                    .toString();
+            return getPackageManager().getApplicationLabel(
+                    getPackageManager().getApplicationInfo(pkg, 0)).toString();
         } catch (Exception ex) {
             return pkg;
         }
     }
 
-    private String saveEvent(String label, String pkg, long time) {
+    private String recordEvent(String pkg, String label, long time) {
         String id = UUID.randomUUID().toString();
         try {
             JSONArray old;
             try {
-                old = new JSONArray(preferences.getString("events", "[]"));
+                old = new JSONArray(prefs.getString("events", "[]"));
             } catch (Exception ex) {
                 old = new JSONArray();
             }
@@ -191,159 +203,19 @@ public class GuardianService extends Service {
             item.put("id", id);
             item.put("time", time);
             item.put("photo", "");
-            item.put("status", "다른 앱 실행 감지 · " + label + " (사진 촬영 없음)");
+            item.put("status", label + " 실행 감지 · 셀카 촬영 대기");
             item.put("package", pkg);
             JSONArray updated = new JSONArray();
             updated.put(item);
-            for (int i = 0; i < old.length() && i < 99; i++) {
-                updated.put(old.get(i));
-            }
-            preferences.edit().putString("events", updated.toString()).apply();
+            for (int i = 0; i < old.length() && i < 99; i++) updated.put(old.get(i));
+            prefs.edit().putString("events", updated.toString()).apply();
         } catch (Exception ignored) { }
         return id;
     }
 
-    private int dp(int n) {
-        return (int) (n * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private TextView label(String content, int size, int color, boolean bold) {
-        TextView text = new TextView(this);
-        text.setText(content);
-        text.setTextSize(size);
-        text.setTextColor(color);
-        text.setGravity(Gravity.CENTER);
-        if (bold) text.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        return text;
-    }
-
-    private void showOverlay(String appName, String eventId) {
-        if (windowManager == null || !Settings.canDrawOverlays(this)) return;
-        long startElapsed = android.os.SystemClock.elapsedRealtime();
-        overlayUntil = System.currentTimeMillis() + WARNING_DURATION;
-
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setGravity(Gravity.CENTER);
-        panel.setPadding(dp(22), dp(30), dp(22), dp(30));
-        GradientDrawable background = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                new int[]{Color.rgb(85, 21, 55), Color.rgb(15, 16, 27), Color.rgb(92, 29, 59)});
-        panel.setBackground(background);
-        TextView icon = label("⚠", 65, Color.rgb(255, 124, 176), true);
-        panel.addView(icon);
-        TextView title = label("내 폰을\n보지 마", 43, Color.WHITE, true);
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(-1, -2);
-        titleLp.topMargin = dp(16);
-        panel.addView(title, titleLp);
-        TextView info = label(appName + " 실행이 기록됐습니다.\n이 휴대폰은 개인 소유입니다.", 16,
-                Color.rgb(244, 198, 222), false);
-        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(-1, -2);
-        infoLp.topMargin = dp(26);
-        panel.addView(info, infoLp);
-        TextView countdown = label("02:00", 42, Color.rgb(255, 124, 176), true);
-        LinearLayout.LayoutParams clockLp = new LinearLayout.LayoutParams(-1, -2);
-        clockLp.topMargin = dp(38);
-        panel.addView(countdown, clockLp);
-        TextView note = label("2분 뒤 자동으로 사라집니다.\n시스템 탐색 및 긴급 기능은 사용할 수 있습니다.", 12,
-                Color.rgb(212, 184, 198), false);
-        LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
-        noteLp.topMargin = dp(18);
-        panel.addView(note, noteLp);
-
-        // Explicit user action to open a visible front camera. No hidden/background capture.
-        Button selfie = new Button(this);
-        selfie.setAllCaps(false);
-        selfie.setText("📸  셀카 카메라 열기");
-        selfie.setTextSize(18);
-        selfie.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        selfie.setTextColor(Color.rgb(27, 16, 37));
-        GradientDrawable selfieBg = new GradientDrawable();
-        selfieBg.setColor(Color.rgb(255, 145, 191));
-        selfieBg.setCornerRadius(dp(18));
-        selfie.setBackground(selfieBg);
-        LinearLayout.LayoutParams selfieLp = new LinearLayout.LayoutParams(-1, dp(64));
-        selfieLp.topMargin = dp(32);
-        panel.addView(selfie, selfieLp);
-
-        TextView cameraNotice = label("버튼을 누르면 셀카 미리보기가 열리고\n촬영 사실이 화면에 표시됩니다.", 13,
-                Color.rgb(247, 208, 227), false);
-        LinearLayout.LayoutParams cameraNoticeLp = new LinearLayout.LayoutParams(-1, -2);
-        cameraNoticeLp.topMargin = dp(12);
-        panel.addView(cameraNotice, cameraNoticeLp);
-        selfie.setOnClickListener(v -> {
-            Intent capture = new Intent(this, MainActivity.class);
-            capture.putExtra("capture_from_warning", true);
-            capture.putExtra("capture_event_id", eventId);
-            capture.putExtra("capture_app_name", appName);
-            capture.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            try {
-                startActivity(capture);
-                removeOverlay();
-            } catch (Exception ex) {
-                android.widget.Toast.makeText(this,
-                        "카메라 화면을 열 수 없어요. afk 앱을 직접 실행해 주세요.",
-                        android.widget.Toast.LENGTH_LONG).show();
-            }
-        });
-
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
-                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
-                PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.CENTER;
-        try {
-            windowManager.addView(panel, params);
-            overlay = panel;
-        } catch (Exception ex) {
-            overlay = null;
-            return;
-        }
-
-        Runnable countdownTask = new Runnable() {
-            @Override public void run() {
-                if (overlay != panel) return;
-                long left = Math.max(0, WARNING_DURATION -
-                        (android.os.SystemClock.elapsedRealtime() - startElapsed));
-                long seconds = (left + 999L) / 1000L;
-                countdown.setText(String.format(Locale.KOREA, "%02d:%02d",
-                        seconds / 60L, seconds % 60L));
-                if (left <= 0L) removeOverlay();
-                else handler.postDelayed(this, 500L);
-            }
-        };
-        countdownTask.run();
-    }
-
-    private void removeOverlay() {
-        if (overlay == null) return;
-        try { windowManager.removeView(overlay); }
-        catch (Exception ignored) { }
-        overlay = null;
-    }
-
-    private void createChannel() {
-        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        NotificationChannel channel = new NotificationChannel(CHANNEL, "afk 보호 모드",
-                NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("다른 앱 실행 감지 동작 중");
-        manager.createNotificationChannel(channel);
-    }
-
-    private void shutdown() {
-        handler.removeCallbacks(scanner);
-        removeOverlay();
-        stopForeground(STOP_FOREGROUND_REMOVE);
-        stopSelf();
-    }
-
     @Override public void onDestroy() {
         handler.removeCallbacksAndMessages(null);
-        removeOverlay();
+        if (notificationManager != null) notificationManager.cancel(CAMERA_NOTIFICATION);
         super.onDestroy();
     }
 }
