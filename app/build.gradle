@@ -7,11 +7,11 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId 'com.kyubang.afk.autocamera'
+        applicationId 'com.kyubang.afk.autocamera2'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '1.0.0-autocamera'
+        versionName '1.0.0-autocamera2'
     }
 
     compileOptions {
