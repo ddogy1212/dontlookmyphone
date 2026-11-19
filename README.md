@@ -18,7 +18,7 @@
 
 ## 개발
 
-Android Studio에서 프로젝트를 열어 빌드할 수 있습니다. JDK 17, Android SDK 35를 사용하며 GitHub Actions에서 debug APK를 빌드합니다.
+Android Studio에서 프로젝트를 열어 빌드할 수 있습니다. JDK 17, Android SDK 36를 사용하며 GitHub Actions에서 debug APK를 빌드합니다.
 
 ## 데이터 처리
 
