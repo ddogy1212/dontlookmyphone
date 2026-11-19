@@ -380,10 +380,11 @@ public class MainActivity extends ComponentActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         add(page, text("●  실행 감지됨", 15, PINK, true), 0);
         add(page, text("잠깐! 📸", 38, WHITE, true), 14);
-        add(page, text("전면 카메라 촬영 안내 📸\n3초 뒤 자동으로 촬영하고 이 기기에 저장해요.",
+        add(page, text("전면 카메라 촬영 안내 📸\n전면 카메라가 준비되면 0.02초 뒤 자동으로 촬영해요.",
                 16, MUTED, false), 13);
 
         PreviewView previewView = new PreviewView(this);
+        previewView.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
         previewView.setScaleType(PreviewView.ScaleType.FILL_CENTER);
         previewView.setBackground(shape(SURFACE, 20));
         LinearLayout.LayoutParams previewLp = new LinearLayout.LayoutParams(
@@ -420,21 +421,23 @@ public class MainActivity extends ComponentActivity {
                             .build();
                     preview.setSurfaceProvider(previewView.getSurfaceProvider());
                     cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageCapture);
-                    // Visible 3-second countdown before a single automatic selfie.
-                    for (int n = 3; n >= 1; n--) {
-                        final int seconds = n;
+                    // Fire exactly once, 20ms after the visible camera preview starts.
+                    // Camera initialization can take longer; 20ms is not a guaranteed
+                    // start-to-photo latency on actual Android devices.
+                    final boolean[] captureQueued = {false};
+                    previewView.getPreviewStreamState().observe(this, state -> {
+                        if (state != PreviewView.StreamState.STREAMING || captureQueued[0]
+                                || captureResolved || screen != Screen.CAPTURE || isFinishing()) {
+                            return;
+                        }
+                        captureQueued[0] = true;
+                        countdown.setText("📸 자동 촬영 중…");
                         handler.postDelayed(() -> {
                             if (!captureResolved && screen == Screen.CAPTURE && !isFinishing()) {
-                                countdown.setText("📸  " + seconds + "초 뒤 자동 촬영");
+                                takePhoto();
                             }
-                        }, (3 - n) * 1000L);
-                    }
-                    handler.postDelayed(() -> {
-                        if (!captureResolved && screen == Screen.CAPTURE && !isFinishing()) {
-                            countdown.setText("촬영 중…");
-                            takePhoto();
-                        }
-                    }, 3100L);
+                        }, 20L);
+                    });
                 } catch (Exception error) {
                     resolveCapture(false, "", "카메라 시작 실패");
                 }
