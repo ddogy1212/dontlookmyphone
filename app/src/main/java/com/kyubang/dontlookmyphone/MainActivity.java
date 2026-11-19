@@ -2,6 +2,7 @@ package com.kyubang.dontlookmyphone;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.app.AppOpsManager;
 import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
@@ -15,6 +16,9 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
+import android.provider.Settings;
+import android.net.Uri;
 import android.os.SystemClock;
 import android.text.InputType;
 import android.view.Gravity;
@@ -85,10 +89,40 @@ public class MainActivity extends ComponentActivity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
-        if (isArmed()) {
+        if (isArmed() && !getIntent().getBooleanExtra("owner_panel", false)) {
             startCapture();
         } else {
             showHome();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (prefs != null && screen == Screen.HOME) showHome();
+    }
+
+    static boolean hasUsageAccess(Context context) {
+        AppOpsManager ops = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+        return ops != null && ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS,
+                Process.myUid(), context.getPackageName()) == AppOpsManager.MODE_ALLOWED;
+    }
+
+    private void openUsageSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS));
+        } catch (Exception ex) {
+            Toast.makeText(this, "설정에서 앱 사용정보 접근 권한을 허용해 주세요.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void openOverlaySettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Exception ex) {
+            Toast.makeText(this, "설정에서 다른 앱 위에 표시 권한을 허용해 주세요.", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -187,6 +221,16 @@ public class MainActivity extends ComponentActivity {
         LinearLayout settings = column(20);
         settings.setBackground(shape(SURFACE, 22));
         add(settings, text("보호 지속 시간 (분)", 17, WHITE, true), 0);
+        add(settings, text("앱 사용정보 접근과 다른 앱 위에 표시를 허용하면 카톡 등 다른 앱 실행도 감지해요.", 14, MUTED, false), 12);
+        Button usage = button((hasUsageAccess(this) ? "✓ " : "① ") + "앱 사용정보 접근 " +
+                (hasUsageAccess(this) ? "허용됨" : "권한 설정"), SURFACE, WHITE);
+        usage.setOnClickListener(v -> openUsageSettings());
+        add(settings, usage, 14);
+        Button overlayPermission = button((Settings.canDrawOverlays(this) ? "✓ " : "② ") +
+                "다른 앱 위에 표시 " + (Settings.canDrawOverlays(this) ? "허용됨" : "권한 설정"),
+                SURFACE, WHITE);
+        overlayPermission.setOnClickListener(v -> openOverlaySettings());
+        add(settings, overlayPermission, 10);
         EditText minutesInput = new EditText(this);
         minutesInput.setSingleLine(true);
         minutesInput.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -212,6 +256,24 @@ public class MainActivity extends ComponentActivity {
                 Toast.makeText(this, "1~1440분 사이로 설정해 주세요.", Toast.LENGTH_LONG).show();
                 return;
             }
+            if (!hasUsageAccess(this)) {
+                new AlertDialog.Builder(this)
+                        .setTitle("앱 사용정보 접근 권한 필요")
+                        .setMessage("이 권한을 허용해야 카카오톡 등 다른 앱을 열었는지 감지할 수 있어요. afk를 찾아 권한을 켜 주세요.")
+                        .setNegativeButton("취소", null)
+                        .setPositiveButton("권한 설정", (d, w) -> openUsageSettings())
+                        .show();
+                return;
+            }
+            if (!Settings.canDrawOverlays(this)) {
+                new AlertDialog.Builder(this)
+                        .setTitle("다른 앱 위에 표시 권한 필요")
+                        .setMessage("카톡 화면 위에 2분 경고를 띄우려면 afk의 다른 앱 위에 표시를 허용해야 해요.")
+                        .setNegativeButton("취소", null)
+                        .setPositiveButton("권한 설정", (d, w) -> openOverlaySettings())
+                        .show();
+                return;
+            }
             pendingMinutes = minutes;
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -233,7 +295,7 @@ public class MainActivity extends ComponentActivity {
             add(root, stop, 10);
         }
 
-        add(root, text("사진은 기기 내부에만 저장됩니다. 카메라 촬영은\n화면에 미리 안내하며, 시스템 홈 버튼은 막지 않습니다.",
+        add(root, text("다른 앱 실행은 시간과 앱 이름만 기록하고 사진을 촬영하지 않아요.\n촬영은 afk 앱을 직접 열었을 때만 안내 후 진행됩니다.",
                 13, MUTED, false), 26);
     }
 
@@ -243,8 +305,16 @@ public class MainActivity extends ComponentActivity {
                 .putLong(KEY_UNTIL, until)
                 .putInt(KEY_MINUTES, minutes)
                 .apply();
-        Toast.makeText(this, minutes + "분 동안 보호 모드가 켜졌어요.", Toast.LENGTH_LONG).show();
-        finishAndRemoveTask();
+        try {
+            Intent monitor = new Intent(this, GuardianService.class);
+            ContextCompat.startForegroundService(this, monitor);
+            Toast.makeText(this, minutes + "분 동안 모든 앱을 감지해요.", Toast.LENGTH_LONG).show();
+            finishAndRemoveTask();
+        } catch (Exception ex) {
+            prefs.edit().remove(KEY_UNTIL).apply();
+            Toast.makeText(this, "보호 시작 실패: 알림/앱 권한과 배터리 설정을 확인해 주세요.",
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
@@ -452,6 +522,7 @@ public class MainActivity extends ComponentActivity {
             showHistory();
         } else if ("stop".equals(action)) {
             prefs.edit().remove(KEY_UNTIL).apply();
+            stopService(new Intent(this, GuardianService.class));
             Toast.makeText(this, "보호를 종료했어요.", Toast.LENGTH_SHORT).show();
             showHome();
         }
