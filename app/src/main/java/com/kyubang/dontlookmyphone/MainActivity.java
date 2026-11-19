@@ -308,7 +308,7 @@ public class MainActivity extends ComponentActivity {
             add(root, stop, 10);
         }
 
-        add(root, text("다른 앱 실행을 감지하면 셀카 카메라가 바로 열립니다.\n화면에서 촬영 버튼을 눌러 사진을 남길 수 있어요.",
+        add(root, text("다른 앱 실행을 감지하면 셀카 카메라가 바로 열립니다.\n카메라 화면에 촬영 예고가 표시되고 약 3초 뒤 사진이 자동으로 저장돼요.",
                 13, MUTED, false), 26);
     }
 
@@ -349,7 +349,7 @@ public class MainActivity extends ComponentActivity {
             } else {
                 new AlertDialog.Builder(this)
                         .setTitle("사진 촬영 권한이 없어요")
-                        .setMessage("권한 없이 계속하면 실행 시각과 2분 경고만 작동하고 사진은 저장되지 않습니다.")
+                        .setMessage("권한 없이 계속하면 다른 앱 실행 시각만 기록되며 사진은 저장되지 않습니다.")
                         .setNegativeButton("취소", null)
                         .setPositiveButton("사진 없이 시작", (d, w) -> armNow(pendingMinutes))
                         .show();
@@ -380,7 +380,7 @@ public class MainActivity extends ComponentActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         add(page, text("●  실행 감지됨", 15, PINK, true), 0);
         add(page, text("잠깐! 📸", 38, WHITE, true), 14);
-        add(page, text("전면 카메라가 켜졌어요.\n촬영 버튼을 누르면 사진을 이 기기에 저장해요.",
+        add(page, text("전면 카메라 촬영 안내 📸\n3초 뒤 자동으로 촬영하고 이 기기에 저장해요.",
                 16, MUTED, false), 13);
 
         PreviewView previewView = new PreviewView(this);
@@ -390,19 +390,16 @@ public class MainActivity extends ComponentActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(350));
         previewLp.topMargin = dp(20);
         page.addView(previewView, previewLp);
-        add(page, text("🔴  전면 카메라 · 촬영은 버튼을 누른 경우에만", 13, PINK, false), 16);
+        add(page, text("🔴  전면 카메라 촬영 준비 중 · 촬영 전 취소 가능", 13, PINK, false), 16);
 
-        Button shutter = button("📸  셀카 촬영하기", PINK, BG);
-        shutter.setEnabled(false);
-        shutter.setOnClickListener(v -> {
-            shutter.setEnabled(false);
-            takePhoto();
-        });
-        add(page, shutter, 16);
+        TextView countdown = text("카메라 준비 중…", 23, PINK, true);
+        countdown.setGravity(Gravity.CENTER);
+        add(page, countdown, 16);
         Button skip = button("사진 촬영 없이 닫기", SURFACE, WHITE);
         skip.setOnClickListener(v -> {
             updateEvent(activeEventId, "", "셀카 촬영 취소");
             captureResolved = true;
+            handler.removeCallbacksAndMessages(null);
             if (cameraProvider != null) cameraProvider.unbindAll();
             finishAndRemoveTask();
         });
@@ -432,7 +429,21 @@ public class MainActivity extends ComponentActivity {
                             .build();
                     preview.setSurfaceProvider(previewView.getSurfaceProvider());
                     cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageCapture);
-                    shutter.setEnabled(true);
+                    // Visible 3-second countdown before a single automatic selfie.
+                    for (int n = 3; n >= 1; n--) {
+                        final int seconds = n;
+                        handler.postDelayed(() -> {
+                            if (!captureResolved && screen == Screen.CAPTURE && !isFinishing()) {
+                                countdown.setText("📸  " + seconds + "초 뒤 자동 촬영");
+                            }
+                        }, (3 - n) * 1000L);
+                    }
+                    handler.postDelayed(() -> {
+                        if (!captureResolved && screen == Screen.CAPTURE && !isFinishing()) {
+                            countdown.setText("촬영 중…");
+                            takePhoto();
+                        }
+                    }, 3100L);
                 } catch (Exception error) {
                     resolveCapture(false, "", "카메라 시작 실패");
                 }
@@ -478,6 +489,7 @@ public class MainActivity extends ComponentActivity {
         String app = getIntent().getStringExtra("capture_app_name");
         String status = app == null ? message : (app + " 실행 감지 · " + message);
         updateEvent(activeEventId, saved ? filename : "", status);
+        handler.removeCallbacksAndMessages(null);
         if (cameraProvider != null) cameraProvider.unbindAll();
         imageCapture = null;
         Toast.makeText(this, saved ? "셀카가 기기에 저장됐어요 📸" : status,
