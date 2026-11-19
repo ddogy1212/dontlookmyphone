@@ -126,12 +126,22 @@ public class GuardianService extends Service {
             events.getNextEvent(event);
             if (event.getEventType() != UsageEvents.Event.ACTIVITY_RESUMED) continue;
             String pkg = event.getPackageName();
-            if (pkg == null || ignore(pkg)) continue;
+            if (pkg == null) continue;
+            // Home screen resets the same-app filter so reopening an app later is detected.
+            // The afk camera itself must NOT reset it: that could cause a capture loop.
+            if (pkg.contains("launcher")) {
+                lastPackage = "";
+                continue;
+            }
+            if (ignore(pkg)) continue;
             app = pkg;
             eventTime = event.getTimeStamp();
         }
         if (app == null) return;
-        if (app.equals(lastPackage) && now - lastTrigger < 3500L) return;
+        // Never retrigger a selfie from returning to the same app after capture.
+        if (app.equals(lastPackage)) return;
+        // Brief global cooldown for fast system transitions / notification bounce.
+        if (now - lastTrigger < 5000L) return;
         lastPackage = app;
         lastTrigger = now;
 
